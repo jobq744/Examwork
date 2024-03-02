@@ -1,0 +1,285 @@
+library(RPostgreSQL)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library (dplyr)
+library(gwdyn)
+library(TSclust)
+library(dendextend)
+
+con <- dbConnect(RPostgreSQL ::PostgreSQL(), user = "postgres", dbname="danube_2", password = "", host = "localhost", port= "5432")
+
+all_data <- dbGetQuery(con, "SELECT * FROM danube1.working_Seriesraw")
+
+#filter daily series and produce weekly
+data_sel_w <- all_data %>%
+  as.tibble %>% 
+  # dplyr::filter(id2 >= 80000) %>%
+  group_by(id2) %>%
+  mutate(
+    YEAR = year(date), 
+    MONTH = month(date), 
+    WEEK = week(date),
+    DAY = wday(date)) %>%
+  group_by(id2, YEAR, WEEK)
+
+# fill, interpolate and export
+data_sel_w1 <- data_sel_w %>% 
+  dplyr::filter(row_number()==1)
+
+# check measurement length
+all_data_len <- data_sel_w1 %>% 
+  # dplyr:filter(row_number() %in% 1:1E4) %>% 
+  ungroup(YEAR) %>%
+  mutate(
+    YEAR = year(date),
+    WEEK = week(date),
+    YEARDAY = yday(date)
+  ) %>% 
+  group_by(id2, YEAR) %>% 
+  arrange(id2, YEAR, date) %>% 
+  mutate(
+    days = length(unique(WEEK))
+  )
+
+# filter years with > 45 measurements/year
+viable_meas <- all_data_len %>% 
+  mutate(maxmeas = max(days)) %>% 
+  dplyr::filter(maxmeas >= 45) # minimum 45 measurments/year
+
+#
+viable_cont_years <- viable_meas %>% 
+  dplyr::filter(row_number() == n()) %>% 
+  group_by(id2) %>% 
+  mutate(
+    cont = YEAR - lag(YEAR),
+    cont = if_else(is.na(cont), 1, cont)
+  ) %>% 
+  arrange(date) %>% 
+  group_by(run = data.table::rleid(id2, cont), id2) %>% 
+  mutate(
+    run_count = 1:n(),
+    maxruncount = max(run_count, na.rm = T) 
+  ) %>%
+  group_by(id2) %>% 
+  dplyr::filter(maxruncount == max(maxruncount)) %>% 
+  dplyr::filter(maxruncount >= 8) #series with more than 8 years of continous data
+
+#export here if you ran into trouble in last section.
+
+data_sel_hehe <- right_join(data_sel_w1, viable_cont_years, by = c("id2", "YEAR"))
+
+data_sel_hehe2 <- merge(data_sel_w1, viable_cont_years, by = c("id2", "YEAR"))
+
+
+data_sel_wcomp <- data_sel_hehe %>% 
+  dplyr::select(id2, date.x) %>% 
+  group_by(id2) %>% 
+  complete(date.x = seq(ymd(min(date.x)), ymd(max(date.x)), by= "week")) %>% 
+  mutate(
+    YEAR =year(date.x),
+    WEEK = week(date.x)
+  ) %>% 
+  group_by(id2, YEAR, WEEK) %>% 
+  dplyr::filter(row_number() == 1)
+
+names(data_sel_hehe)[names(data_sel_hehe) == 'WEEK.x'] <- 'WEEK'
+
+data_sel_wfin <- right_join(data_sel_hehe, data_sel_wcomp, by = c("id2", "YEAR", "WEEK"))
+
+data_sel_wfin = subset(data_sel_wfin, select = c("id2","date.x.y", "value.x")) 
+
+data_sel <- data_sel_wfin %>%
+ group_by(id2) %>%
+  mutate(VALUE_INTP = na.approx(value.x, na.rm =FALSE)) %>%
+  fill(VALUE_INTP, .direction = "updown") %>%
+  dplyr::select(1,2,3,4) %>%
+  group_by(id2) %>%
+  mutate(
+    VALUE_norm = (VALUE_INTP - min(VALUE_INTP, na.rm = T)) /
+      (max(VALUE_INTP, na.rm = T) - min(VALUE_INTP, na.rm = T)),
+    VALUE_open = VALUE_INTP - min(VALUE_INTP, na.rm = T),
+    VALUE_meas =( VALUE_INTP - mean(VALUE_INTP, na.rm=T)) / sd(VALUE_INTP, na.rm=T)
+  ) %>%
+  dplyr::select(id2, date.x.y , everything()) %>%
+  mutate_at(
+    ., vars(VALUE_norm:VALUE_open), ~round(., 2)
+  )
+
+write.csv(data_sel, "complete_data.csv", row.names = FALSE)
+
+time_series <- dbGetQuery(con, "SELECT * FROM danube1.wts_danube")
+
+# run indices:
+ind_wkl <- time_series %>%
+  group_by(id2) %>%
+  dplyr::summarise(
+    # originally open scale - now also standardized
+    iaf.s = mean(intannfluc(date_x_y, value_norm, out = "s")),
+    iaf.y = intannfluc(date_x_y, value_norm, out = "y"),
+    BLS = baseflow(date_x_y,value_norm, out = "BFS", block.len = 21),
+    l1 = lmom(date_x_y, value_norm, out = "l1"),
+    l2 = lmom(date_x_y, value_norm, out = "l2"),
+    l3 = lmom(date_x_y, value_norm, out = "l3"),
+    l4 = lmom(date_x_y, value_norm, out = "l4"),
+    # standardized
+    bimod = bimodality(value_norm),
+    colwell.C = colwells(date_x_y, value_norm, out = "constancy"),
+    colwell.M = colwells(date_x_y, value_norm, out = "contingency"),
+    colwell.P = colwells(date_x_y, value_norm, out = "predictability"),
+    cvmon.min = cvmonminmax(date_x_y, value_norm, out = "min"),
+    cvmon.max = cvmonminmax(date_x_y, value_norm, out = "max"),
+    dip = list(diptest::dip.test(value_norm)),
+    dc.rng.01.09 = fdcindices(date_x_y, value_norm, out = "range", y1 = 0.1, y2 = 0.9),
+    dc.rng.02.08 = fdcindices(date_x_y, value_norm, out = "range", y1 = 0.2, y2 = 0.8),
+    dc.rng.025.075 = fdcindices(date_x_y, value_norm, out = "range", y1 = 0.25, y2 = 0.75),
+    med = median(value_norm, na.rm = TRUE),
+    parde = parde(date_x_y, value_norm, out = "metric"),
+    pulse.count.l = pulses(date_x_y, value_norm, out = "count", threshold.type = "low"),
+    pulse.count.h = pulses(date_x_y, value_norm, out = "count", threshold.type = "high"),
+    pulse.dur.l = pulses(date_x_y, value_norm, out = "duration", threshold.type = "low"),
+    pulse.dur.h = pulses(date_x_y, value_norm, out = "duration", threshold.type = "high"),
+    pulse.cv.l = pulses(date_x_y, value_norm, out = "CV", threshold.type = "low"),
+    pulse.cv.h = pulses(date_x_y, value_norm, out = "CV", threshold.type = "high"),
+    bandwd = silverman(value_norm),
+    vardoy.min = varjdminmax(date_x_y, value_norm, out = "min"),
+    vardoy.max = varjdminmax(date_x_y, value_norm, out = "max")
+    )
+
+
+# indices according to Wang et al 2006 ---------------------------------
+
+# indices according to Wang et al 2006 ---------------------------------
+# read data ---- loop, if errors in dataserie
+
+# id_vector <- ind_wkl[['id2']]
+# 
+# 
+# for (x in id_vector){
+#   test = paste("SELECT * FROM danube1.wts_danube WHERE id2 =", x)
+#   data_sel2 <- dbGetQuery(con, test)
+# 
+#   if(nrow(time_series) != 0){
+# 
+# 
+#   print(x)
+# 
+#     res <- try(
+
+
+  ind_wkl_wang <- time_series %>% 
+    group_by(id2) %>% 
+    tidyr::nest() %>% 
+    dplyr::mutate(
+      start = map(data %>% map("date_x_y"), .f = start_YEARMON),
+      tsobj = map2(data %>% map("value_norm"), start, .f = as_wkly_ts),
+      wang = map(tsobj, .f = tschar)
+    ) %>% 
+    tidyr::unnest(wang) %>% 
+    rename(
+      hurst = Hurst,
+      lyapunov = Lyapunov,
+      autocor = autocorrelation,
+      freq = frequency,
+      seas = seasonal,
+      skew = skewness,
+      kurt = kurtosis,
+      autocor.dc = dc_autocorrelation,
+      nonlinear.dc = dc_nonlinear,
+      skew.dc = dc_skewness,
+      kurt.dc = dc_kurtosis
+    )
+#   )
+#   if(inherits(res, "try-error"))
+#   {
+#     print(x)
+#     print("error")
+#     next
+#   }
+# }
+# 
+# }
+
+all_indicies <- merge(ind_wkl, ind_wkl_wang, by = c("id2"))
+
+all_indicies = subset(all_indicies, select = -c(dip, start))
+  all_indicies = all_indicies %>% BBmisc::dropNamed("tsobj")
+  all_indicies = all_indicies %>% BBmisc::dropNamed("data")
+  all_indicies = all_indicies %>% BBmisc::dropNamed("freq")
+  all_indicies = all_indicies %>% BBmisc::dropNamed("seas")
+  all_indicies = all_indicies %>% BBmisc::dropNamed("freq")
+  
+    
+z_indicies <- scale(all_indicies[2:39])
+
+# z_test <- scale(all_indicies["iaf.s"])
+
+z_frame = as.data.frame(z_indicies)
+
+z_ind <- cbind(all_indicies$id2, z_frame)
+
+names(z_ind)[names(z_ind) == 'all_indicies$id2'] <- 'id2'
+
+#preparing clustering
+
+x <- z_ind
+
+time_series_sub <- subset(time_series, select =c("id2","date_x_y", "value_meas"))
+
+ts <- time_series_sub %>% 
+  mutate(id2 = as.character(id2))
+
+dfind_to_mat = function (x) {
+  x %>% 
+    column_to_rownames(var= "id2") %>% 
+    as.matrix
+}
+
+
+# index-based clustering ------------------------------------------------------
+
+# selct indices to cluster
+ind_sel <- c(
+  "IAF.s",
+  "vardoy.min",
+  "rev.avg", "BLI",
+  "autocor", "hurst",
+  "recov.const", "reces.const",
+  "avg.ann.max",
+  "peakts.avg", 
+  "bimod",
+  "nonlinear")
+
+ind_sel2 <- c(
+  "IAF.y",
+  "rise.cv",
+  "rev.avg",
+  "autocor", "hurst",
+  "recov.const",
+  "peakbase.cv",
+  "pulse.dur.h", 
+  "pulse.count.h",
+  "nonlinear")
+
+ind_sel3 <- c(
+  "hurst", 
+  "autocor",
+  "pulse.count.l",
+  "pulse.count.h",
+  "iaf.y"
+)
+
+ind_series <- z_ind %>% 
+  dplyr::select(id2, one_of(ind_sel3)) %>% 
+  nest(data = everything()) %>% 
+  mutate(
+    mat       = map(data, dfind_to_mat),
+    man_diss  = map(mat, dist, method = "manhattan"),
+    euc_diss  = map(mat, dist, method = "euclidean"),
+    man_clust = map(man_diss, hclust, method = "ward.D2") %>% 
+      map(as.dendrogram),
+    euc_clust = map(euc_diss, hclust, method = "ward.D2") %>% 
+      map(as.dendrogram),
+    man_cut  = map(man_clust, cutree, k=6),
+    euc_cut  = map(euc_clust, cutree, k=6),
+  )
