@@ -1,0 +1,124 @@
+library(RPostgreSQL)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library (dplyr)
+library(gwdyn)
+library(TSclust)
+library(dendextend)
+
+#connect and read data
+#"working_seriesraw" is a subset of table "ts", with some prior filtration done. id2 = pid
+con <- dbConnect(RPostgreSQL ::PostgreSQL(), user = "postgres", dbname="*", password = "", host = "localhost", port= "5432")
+
+Working_timeseries <- dbGetQuery(con, "SELECT * FROM danube1.wts_danube")
+
+cluster_nr <- dbGetQuery(con, "SELECT * FROM danube1.Well_clusters")
+
+join_clusternr <- left_join(Working_timeseries, cluster_nr, by = c("id2" = "id"))
+
+#skapa subsets
+ts_cluster_plot_1_new = subset(join_clusternr, c_ind_euc == 1)
+ts_cluster_plot_2_new = subset(join_clusternr, c_ind_euc == 2)
+ts_cluster_plot_3_new = subset(join_clusternr, c_ind_euc == 3)
+ts_cluster_plot_4_new = subset(join_clusternr, c_ind_euc == 4)
+ts_cluster_plot_5_new = subset(join_clusternr, c_ind_euc == 5)
+ts_cluster_plot_6_new = subset(join_clusternr, c_ind_euc == 6)
+
+#grupperar
+
+ts_cluster_plot_1_new <- ts_cluster_plot_1_new %>% 
+  group_by(id2) %>% 
+  nest()
+ts_cluster_plot_2_new <- ts_cluster_plot_2_new %>% 
+  group_by(id2) %>% 
+  nest()
+ts_cluster_plot_3_new <- ts_cluster_plot_3_new %>% 
+  group_by(id2) %>% 
+  nest()
+ts_cluster_plot_4_new <- ts_cluster_plot_4_new %>% 
+  group_by(id2) %>% 
+  nest()
+ts_cluster_plot_5_new <- ts_cluster_plot_5_new %>% 
+  group_by(id2) %>% 
+  nest()
+ts_cluster_plot_6_new <- ts_cluster_plot_6_new %>% 
+  group_by(id2) %>% 
+  nest()
+
+ts_cluster_plot_1_new = ts_cluster_plot_1_new[sample(nrow(ts_cluster_plot_1_new), 20),]
+ts_cluster_plot_2_new = ts_cluster_plot_2_new[sample(nrow(ts_cluster_plot_2_new), 20),]
+ts_cluster_plot_3_new = ts_cluster_plot_3_new[sample(nrow(ts_cluster_plot_3_new), 20),]
+ts_cluster_plot_4_new = ts_cluster_plot_4_new[sample(nrow(ts_cluster_plot_4_new), 20),]
+ts_cluster_plot_5_new = ts_cluster_plot_5_new[sample(nrow(ts_cluster_plot_5_new), 20),]
+ts_cluster_plot_6_new = ts_cluster_plot_6_new[sample(nrow(ts_cluster_plot_6_new), 20),]
+
+ts_cluster_plot_1_new <- ts_cluster_plot_1_new %>% 
+  unnest()
+ts_cluster_plot_2_new <- ts_cluster_plot_2_new %>% 
+  unnest()
+ts_cluster_plot_3_new <- ts_cluster_plot_3_new %>% 
+  unnest()
+ts_cluster_plot_4_new <- ts_cluster_plot_4_new %>% 
+  unnest()
+ts_cluster_plot_5_new <- ts_cluster_plot_5_new %>% 
+  unnest()
+ts_cluster_plot_6_new <- ts_cluster_plot_6_new %>% 
+  unnest()
+
+#plot
+#ts_cluster_plot_1_new %>% 
+  #filter(id2 == 10584) %>%
+  filter(date_x_y > as.Date("1980-01-01"))%>%
+  filter(date_x_y < as.Date("1995-12-31"))%>%
+  ggplot() + 
+  aes(date_x_y, value_meas) + 
+  #Cluster1
+  #geom_line(color = "#b79f00", size = 0.7) +  # Adjust line color and thickness
+  #Cluster2
+  #geom_line(color = "#02bec2", size = 0.5) +  # Adjust line color and thickness
+  #Cluster3
+  #geom_line(color = "#00ba38", size = 0.7) +  # Adjust line color and thickness
+  #Cluster4
+  #geom_line(color = "#02bec2", size = 0.7) +  # Adjust line color and thickness
+  #Cluster5
+  #geom_line(color = "#5e98fa", size = 0.7) +  # Adjust line color and thickness
+  #Cluster6
+  geom_line(color = "#f664e3", size = .1) +  # Adjust line color and thickness
+  labs(y = "Standardized Groundwater Level", x = "Date") +
+  scale_y_continuous(limits = c(-4, 5)) +  # Set y-axis limits
+  theme_minimal() +  # Adjust theme if needed
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Increase x-axis label size
+        axis.text.y = element_text(size = 10),  # Increase y-axis label size
+        axis.title.x = element_text(size = 14),  # Increase x-axis title size
+        axis.title.y = element_text(size = 14))  # Increase y-axis title size
+
+#theme
+ez_theme_pl <- theme_bw() +
+  theme(
+    panel.grid.major = element_line(color = "white"),
+    panel.background = element_rect(fill = "grey95"),
+    strip.background = element_rect(fill=NA, colour = NA),
+    axis.text = element_text(colour = "grey5"),
+    axis.ticks.length=unit(-0.2, "cm"), 
+    axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), 
+    axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), 
+    legend.position = "none"
+    # axis.title.y = element_blank(),
+    # plot.margin = unit(c(0, 0, 0, 0), "cm")
+  )
+
+# ind eucl ---------
+ts_cluster_plot_1_new %>% 
+  filter(date_x_y > as.Date("1980-01-01"))%>%
+  filter(date_x_y < as.Date("1995-01-01"))%>%
+  ggplot() + 
+  aes(date_x_y, value_meas, colour = "#f664e3") + 
+  labs(y="Standardized groundwater level", x="Date") +
+  geom_line(aes(group = id2), size = .2) + 
+  ylim(c(-6, 6))+
+  scale_x_date(breaks = "1 year", date_minor_breaks = "1 month", date_labels = "%Y") +#stat_summary(fun = mean,
+                #geom = "line", colour = "black", size = 0.1) +
+  #facet_wrap(~c_ind_euc, nrow = 3) +
+  scale_color_manual(values = "#f8756d") +
+  ez_theme_pl
