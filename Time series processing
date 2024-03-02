@@ -7,7 +7,7 @@ library(gwdyn)
 library(TSclust)
 library(dendextend)
 
-con <- dbConnect(RPostgreSQL ::PostgreSQL(), user = "postgres", dbname="danube_2", password = "", host = "localhost", port= "5432")
+con <- dbConnect(RPostgreSQL ::PostgreSQL(), user = "postgres", dbname="*", password = "", host = "localhost", port= "5432")
 
 all_data <- dbGetQuery(con, "SELECT * FROM danube1.working_Seriesraw")
 
